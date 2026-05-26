@@ -1,0 +1,19 @@
+[project]
+name = "nip41-harness"
+version = "0.1.0"
+description = "Confirmation harness for the NIP-41 key-rotation construction"
+requires-python = ">=3.10"
+dependencies = [
+    "coincurve>=20.0.0",
+    "cryptography>=42.0.0",
+]
+
+[project.optional-dependencies]
+dev = ["pytest>=8.0.0", "hypothesis>=6.100.0"]
+
+[tool.setuptools.packages.find]
+include = ["nip41*", "vendor*", "oracles*"]
+
+[tool.pytest.ini_options]
+pythonpath = ["."]
+testpaths = ["tests"]

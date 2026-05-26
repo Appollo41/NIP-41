@@ -1,0 +1,28 @@
+# Default: let git decide, normalize to LF in the repo on commit.
+* text=auto eol=lf
+
+# Windows-only scripts must keep CRLF or they won't run on Windows.
+*.bat   text eol=crlf
+*.cmd   text eol=crlf
+
+# Unix shell scripts and the Gradle wrapper must stay LF.
+*.sh        text eol=lf
+gradlew     text eol=lf
+
+# Vendored upstream files: keep byte-for-byte identical to source.
+# Treat as binary so git never normalizes line endings or whitespace.
+harness/vendor/bip340_test_vectors.csv     binary
+harness/vendor/bip341_wallet_vectors.json  binary
+harness/vendor/bip340_reference.py         -text
+
+# Common binary types — never normalize.
+*.png   binary
+*.jpg   binary
+*.jpeg  binary
+*.gif   binary
+*.ico   binary
+*.pdf   binary
+*.jar   binary
+*.zip   binary
+*.gz    binary
+*.tar   binary
