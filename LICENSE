@@ -24,17 +24,19 @@ SOFTWARE.
 
 ## Third-party code
 
-This repository vendors third-party code that remains under its original
-license. The MIT terms above do not extend to these files.
+Some files come from other projects and keep their original licenses. The
+MIT terms above do not cover them.
 
 * `harness/vendor/bip340_reference.py` and the BIP test vectors under
-  `harness/vendor/` are unmodified copies from https://github.com/bitcoin/bips
-  and remain under **BSD-2-Clause**. See `harness/vendor/PROVENANCE.md` for
-  exact provenance.
+  `harness/vendor/` are unmodified copies from https://github.com/bitcoin/bips,
+  licensed under **BSD-2-Clause**. See `harness/vendor/PROVENANCE.md` for the
+  upstream commit and download date.
 
-* `kmp/demo/src/main/kotlin/com/appollo41/nip41/demo/Bech32.kt` is a
-  near-verbatim subset of ACINQ's `bitcoin-kmp` `Bech32.kt`
-  (https://github.com/ACINQ/bitcoin-kmp) and remains under **Apache-2.0**.
-  Local adaptations are limited to the `package` declaration and the omission
-  of three Bitcoin-specific methods unused by NIP-19; retained declarations
-  are byte-identical to upstream. See the file header for details.
+* `kmp/nip41/src/commonMain/kotlin/com/appollo41/nip41/Bech32.kt` is a
+  verbatim subset of ACINQ's `bitcoin-kmp` `Bech32.kt`
+  (https://github.com/ACINQ/bitcoin-kmp), licensed under **Apache-2.0**. The
+  only changes from upstream are the `package` declaration and the omission
+  of three Bitcoin-specific methods that NIP-19 does not use
+  (`hrp(BlockHash)`, `encodeWitnessAddress`, `decodeWitnessAddress`). All
+  retained declarations are byte-identical to upstream. The file header
+  records the synced upstream commit.

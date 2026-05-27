@@ -1,0 +1,28 @@
+[package]
+name = "nip41"
+version = "0.1.0"
+edition = "2024"
+rust-version = "1.85"
+license = "MIT"
+description = "Reference implementation of NIP-41 (Nostr Identity Chain)."
+repository = "https://github.com/appollo41/nip41"
+readme = "README.md"
+
+[dependencies]
+secp256k1 = { version = "0.30", features = ["std", "global-context", "rand"] }
+hkdf = "0.12"
+sha2 = "0.10"
+hex = "0.4"
+bech32 = "0.11"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+zeroize = { version = "1.8", features = ["zeroize_derive"] }
+thiserror = "2"
+
+[dev-dependencies]
+criterion = "0.5"
+hex-literal = "0.4"
+
+[[bench]]
+name = "chain"
+harness = false
