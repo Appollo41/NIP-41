@@ -4,6 +4,16 @@
 > shared so collaborators and friends can read, comment, and verify against
 > the accompanying test vectors and reference implementations.
 
+## Open questions
+
+The draft has following open questions. Each item links to a dedicated
+discussion document with examples and trade-offs.
+
+- **Rotation event history depth.** Should every `kind:1041` rotation
+  event carry only the immediate predecessor's chain proof, or every
+  prior step's proof up to the current identity? See
+  [open-questions/rotation-event-history-depth.md](open-questions/rotation-event-history-depth.md).
+
 ---
 NIP-41
 ======
