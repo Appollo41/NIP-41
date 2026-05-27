@@ -121,9 +121,13 @@ cross-client primitive is the root secret itself; see
 ### Portability (root-secret export)
 
 Because some root-secret sources are bound to the device or domain that
-produced them (a FIDO2 passkey, an OS keychain entry), a conformant
-client **MUST** be able to export and import the raw root secret
-independently of its source.
+produced them (a FIDO2 passkey, an OS keychain entry), any implementation
+that holds the root secret **MUST** be able to export and import it
+independently of its source. This applies to dedicated signers (NIP-46,
+NIP-55), hardware-signer interfaces, and clients that manage keys
+directly. Clients that never hold the root secret are not required to
+handle root-secret import/export. This includes clients where the user
+logs in with an `nsec`, NIP-46, or NIP-55.
 
 The interchange encoding is **bech32** with HRP `nroot`, following
 [NIP-19](19.md). The data is the 32 bytes of the root secret:
@@ -140,6 +144,29 @@ active generation by walking `kind:1041` events from the user's relays
 The root secret is strictly more dangerous than an nsec because it derives
 the entire rotation chain. Clients **SHOULD** warn at export accordingly,
 and **SHOULD** prompt the user to back up the root secret at onboarding.
+
+### Root-secret lifecycle
+
+Root-secret handling has three distinct phases.
+
+- **Creation.** Any implementation MAY generate a new identity chain,
+  which requires deriving a root secret. The generating implementation
+  **MUST** prompt the user to back up the root secret and **SHOULD NOT**
+  retain it past onboarding. After onboarding, the everyday client
+  retains only `nsec[0]` (or a remote-signing session) for ordinary
+  signing.
+- **Login.** Everyday clients **SHOULD NOT** accept `nroot` as a login
+  method. Importing an `nroot` confers permanent control over the entire
+  identity chain (every past and future generation) and is appropriate
+  only for key-custodian implementations such as dedicated signer apps
+  or hardware-signer interfaces. Ordinary login flows **SHOULD** accept
+  `nsec` or a remote-signing session (NIP-46 bunker URI, NIP-55) instead.
+- **Custody.** Long-term storage of the root secret **SHOULD** live in a
+  dedicated signer, a hardware-backed store, or an offline backup, not
+  alongside the `nsec` in everyday-client local storage. The security of
+  the rotation chain depends on the root secret being harder to steal
+  than any single `nsec`; storing both in the same place collapses that
+  property.
 
 ## Identity chain
 
@@ -341,7 +368,7 @@ keeps other `npub[0]` events from preceding it.
 }
 ```
 
-**Rotation.** Two `successor` tags — one predecessor proof, one
+**Rotation.** Two `successor` tags: one predecessor proof, one
 self-successor. Signed by `nsec[i+1]`, never by the old key (which may
 be compromised).
 
@@ -443,6 +470,17 @@ generation iff at least one valid event returned has a self-successor
 whose `subject == K`. This holds for the chain-birth event and for any
 rotation event landing on `K`.
 
+**`priorNpubs(P)`.** The client fetches
+`{"kinds":[1041], "authors":["<P hex>"]}` and finds the valid event
+carrying a `predecessor` p-tag; that tag's value is `P`'s immediate
+predecessor. Recursing on that predecessor yields `P`'s ancestor list,
+ordered oldest first. The recursion terminates at a chain-birth event
+(no `predecessor` p-tag) and at a bridge: the legacy npub reached via
+a `bridge` tag is included in the list but not recursed on, since a
+legacy key signs no `kind:1041` of its own. The recursion is bounded
+by `N`. For a fresh (non-bridged) chain, `priorNpubs(npub[0])` is the
+empty list.
+
 Key properties:
 
 - For a **chain rotation**, verification needs only `oldpub` (which the
@@ -495,6 +533,13 @@ Three client roles appear in this NIP. A client may play any or all of
 them at different times. The protocol-visible behaviour required of each
 role is intentionally minimal so every implementation behaves identically
 at the protocol layer.
+
+The roles below describe protocol-visible behaviour, not which piece of
+software a user is looking at. Any MUST in this section that requires
+the root secret or a non-current `nsec[i]` (chain birth, rotation,
+bridge) binds the **implementation that performs the operation**, which
+in a delegated-signing deployment (NIP-46, NIP-55, hardware signer) is
+the signer rather than the everyday client.
 
 #### Chain-birth client
 
@@ -560,18 +605,10 @@ generation `i+1`.
    through the network: each follower's kind:3 update advances the
    migration one client at a time.
 
-Anything beyond these two MUSTs (re-rendering mentions in old events,
-collapsing DM threads under one identity, showing a "migrated" notice on
-the old profile, what to do about events signed by the old key after
-rotation) is client UX, not protocol. Different clients will make different
-choices; the protocol-visible outcome (which npub is current) is identical
-across them.
-
 **Backward routing: historical mentions.** When the rotated user filters
 for their own notifications, the filter must include every npub they have
-ever held. The user's client knows the full chain (it controls the root
-secret), so the notification filter is
-`["p", npub[0]] OR ["p", npub[1]] OR …`. Old events that tagged a prior
+ever held: `["p", npub[0]] OR ["p", npub[1]] OR …`. The client builds
+the list with `priorNpubs(current)`. Old events that tagged a prior
 npub remain reachable by the current owner.
 
 **Forward routing: new mentions.** Any author tagging any pubkey calls
@@ -742,9 +779,9 @@ The only response is to **abandon the chain and start a new identity**
 from a fresh root secret, and re-establish the link to followers
 **socially**: out of band, and via whatever web-of-trust signals exist.
 
-Protecting the root secret is therefore paramount. It should live in a
-hardware-backed store (passkey, secure element, OS keychain) and be
-exported only as a backup (see [Portability](#portability-root-secret-export)).
+The root secret should therefore live in a hardware-backed store
+(passkey, secure element, OS keychain) and be exported only as a backup
+(see [Portability](#portability-root-secret-export)).
 
 ### Encrypted messages across rotation
 
@@ -752,10 +789,11 @@ Messages encrypted to `npub[i]` cannot be decrypted with `nsec[i+1]`; they
 are different keys. This NIP does not change any encryption scheme. Two
 practical notes:
 
-- **Reading old messages still works for the owner.** Because every
-  generation derives from one root secret, the owner's client can re-derive
-  `nsec[i]` at any time and decrypt historical messages. This is an
-  advantage over schemes whose keys have independent entropy.
+- **Reading old messages still works for the owner.** Each generation
+  derives from one root secret, so the implementation holding the root
+  secret can re-derive `nsec[i]` at any time and decrypt historical
+  messages. This is an advantage over schemes whose keys have
+  independent entropy.
 - **New messages.** Once a correspondent's client has resolved the
   rotation (see [Client verification](#client-verification)), it encrypts
   to the current key. There is no protocol-defined dual-encryption
@@ -854,7 +892,7 @@ and modular arithmetic, not hand-rolled implementations.
 Derives the internal scalar and point for generation `i` from the root
 secret. Uses HKDF-SHA256 with NIP-41-specific salt and info. The
 optional `counter_start` lets a caller skip past counter values that
-prior derivations have already consumed — needed when a tweak
+prior derivations have already consumed. This is needed when a tweak
 rejection (`t[i] ≥ n` in `chainStep` below) re-derives `P_internal[i]`
 with the shared counter (see [Identity chain](#identity-chain)). The
 returned `counter_used` is the counter value that produced the
@@ -913,7 +951,7 @@ rejection (signaled by `chain_step` returning `None`). See
 def build_chain(root_secret, N):
     npub = [None] * N
 
-    # Terminal generation: commits to nothing — only p_internal rejection
+    # Terminal generation: commits to nothing. Only p_internal rejection
     # applies (handled inside internal_key).
     _, P_terminal, _ = internal_key(root_secret, N - 1)
     npub[N - 1] = xonly(P_terminal)
