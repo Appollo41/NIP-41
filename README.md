@@ -6,13 +6,16 @@
 
 ## Open questions
 
-The draft has following open questions. Each item links to a dedicated
-discussion document with examples and trade-offs.
+The draft has following open questions:
 
 - **Rotation event history depth.** Should every `kind:1041` rotation
   event carry only the immediate predecessor's chain proof, or every
   prior step's proof up to the current identity? See
   [open-questions/rotation-event-history-depth.md](open-questions/rotation-event-history-depth.md).
+- **Legacy bridge.** The bridge design for existing keys
+  (`kind:1042` + OpenTimestamps + bridge `kind:1041`) is still
+  unsettled. Whether its current shape is right, whether a different
+  format would serve better, or whether it belongs in this NIP.
 
 ---
 NIP-41
@@ -29,7 +32,11 @@ This NIP lets a Nostr identity move from one key to another in a way that any
 client can verify **cryptographically against the key itself**, without
 trusting timestamps, web-of-trust, external chains, or any specific relay.
 The rotation event is fetched from a relay like any other event; once a
-client has it, verification is purely local.
+client has it, verification is purely local. The one-shot bridge from a
+pre-existing legacy key into a committed chain is a separate mechanism that
+anchors to Bitcoin via [NIP-03](https://github.com/nostr-protocol/nips/blob/master/03.md)
+OpenTimestamps for cryptographic firstness; see
+[The bridge for existing keys](#the-bridge-for-existing-keys).
 
 It works by **committing each key to its successor at the moment the key is
 created**. The successor's identity is woven into the public key itself using
@@ -136,8 +143,7 @@ that holds the root secret **MUST** be able to export and import it
 independently of its source. This applies to dedicated signers (NIP-46,
 NIP-55), hardware-signer interfaces, and clients that manage keys
 directly. Clients that never hold the root secret are not required to
-handle root-secret import/export. This includes clients where the user
-logs in with an `nsec`, NIP-46, or NIP-55.
+handle root-secret import/export.
 
 The interchange encoding is **bech32** with HRP `nroot`, following
 [NIP-19](19.md). The data is the 32 bytes of the root secret:
@@ -306,8 +312,7 @@ construction is visible only through published `kind:1041` events.
   [The `kind:1041` event](#the-kind1041-event)) discloses `P_internal[i]`
   and `npub[i+1]`. Deeper generations (`npub[i+2]`, `npub[i+3]`, …) stay
   hidden inside their own commitments; recovering them requires inverting
-  the HKDF derivation of the root secret. This disclosure is what enables
-  a verifier to refuse the bridge takeover; see
+  the HKDF derivation of the root secret. See
   [Conflicting rotation events](#conflicting-rotation-events).
 
 ## The `kind:1041` event
@@ -493,18 +498,12 @@ empty list.
 
 Key properties:
 
-- For a **chain rotation**, verification needs only `oldpub` (which the
-  client already has; it *is* the identity being looked at) and the
-  rotation event itself. No commitment event, no timestamp, no trusted
-  relay, no web of trust. Once the event is in hand, verification is
-  purely local: any relay returning it is sufficient, and a forged event
-  fails the equation regardless of its source.
+- For a **chain rotation**, verification uses only `oldpub` and the
+  rotation event itself; it is purely local.
 - For a **bridge rotation**, verification additionally fetches the
-  referenced `kind:1042` event and performs the `isCommitted` /
-  conflict-search queries described in
-  [The bridge for existing keys](#the-bridge-for-existing-keys). This is
-  intrinsically network-dependent because legacy keys have no in-key
-  commitment to verify against.
+  referenced `kind:1042` and its `kind:1040` attestation, and runs
+  `verifyBridge`; see
+  [The bridge for existing keys](#the-bridge-for-existing-keys).
 - A forged rotation does not "look suspicious"; it fails the equation and
   is rejected. There is no contested case for a committed identity.
 - **Fail closed.** Anything that does not verify is ignored. The NIP can
@@ -529,13 +528,11 @@ otherwise be available to an attacker holding `nsec[i]`: they could sign
 a `kind:1042` from `npub[i]` and bridge to a key they control, because
 without a published self-successor a verifier cannot distinguish a
 committed `npub[i]` from a legacy `npub` by inspecting the key bytes
-alone. The `kind:1041` self-successor tag is what makes that distinction
-visible to verifiers.
+alone.
 
-For a **bridged** legacy key, conflicts remain possible because legacy
-keys have no in-key commitment; see
-[The bridge for existing keys](#the-bridge-for-existing-keys) for the
-fail-closed rule on conflicting `kind:1042` events.
+For a **bridged** legacy key, conflicts among `kind:1042` events are
+resolved by `verifyBridge`; see
+[The bridge for existing keys](#the-bridge-for-existing-keys).
 
 ### Client behaviour
 
@@ -631,7 +628,19 @@ An `npub` created before this NIP has no commitment baked in. It cannot
 become a committed identity (you cannot change a key that already exists).
 It can do **exactly one** move, into a fresh committed chain.
 
-The legacy key publishes a one-time bridge commitment:
+The bridge is composed of three events:
+
+1. A `kind:1042` **bridge commitment** signed by the legacy key, linking
+   itself to a fresh committed chain.
+2. A [NIP-03](https://github.com/nostr-protocol/nips/blob/master/03.md)
+   `kind:1040` **OpenTimestamps attestation** anchoring the `kind:1042`
+   to a Bitcoin block.
+3. A `kind:1041` **bridge migration** signed by the fresh chain head,
+   activating the cutover.
+
+Clients SHOULD publish the `kind:1042` and its `kind:1040` attestation
+at NIP-41 onboarding. Pre-anchor compromise is unrecoverable; see
+[Residual concerns](#residual-concerns).
 
 ### Bridge commitment `kind:1042`
 
@@ -653,7 +662,24 @@ The following tag MUST be present:
 - `commits`: a single tag whose value is the hex-encoded `npub[0]` of
   a fresh committed chain.
 
-Then the fresh chain's `npub[0]` publishes a `kind:1041` event with two
+### Bridge attestation (OpenTimestamps `kind:1040`)
+
+A bridge MUST be accompanied by a
+[NIP-03](https://github.com/nostr-protocol/nips/blob/master/03.md)
+OpenTimestamps attestation targeting the `kind:1042` event id. The
+Bitcoin attestation in the proof MUST be confirmed to at least **6
+blocks** at the moment of verification; NIP-03 itself does not
+constrain confirmation depth, so the 6-block floor is added by this
+NIP.
+
+The publishing client SHOULD submit the `kind:1042` id to one or more
+OpenTimestamps calendars immediately after publishing the `kind:1042`,
+wait for Bitcoin confirmation (typically ~1 hour), then publish the
+resulting `kind:1040` to the same relays as the `kind:1042`.
+
+### Bridge migration `kind:1041`
+
+The fresh chain's `npub[0]` publishes a `kind:1041` event with two
 tags: a `bridge` tag referencing the `kind:1042` event, and a
 self-successor tag opening the fresh chain's own commitment.
 
@@ -673,121 +699,71 @@ self-successor tag opening the fresh chain's own commitment.
 }
 ```
 
-The `bridge` tag replaces what would be the predecessor-proof
-`successor` tag in a chain rotation: a legacy key has no in-key
-commitment to open, so its rotation is proven indirectly through the
-`kind:1042` reference instead. The self-successor tag is the same as in
-any `kind:1041` event and is what establishes the fresh `npub[0]` as a
-committed-chain head, protecting it from a subsequent bridge takeover.
+The `bridge` tag replaces the predecessor-proof `successor` tag used in
+chain rotation. The self-successor tag is identical to a chain-rotation
+self-successor.
 
-When publishing the bridge, the rotating client MUST also publish the
-new chain's NIP-65 (`kind:10002` for the fresh `npub[0]`) to the same
-relays as the `kind:1042` event, so followers who find the bridge can
-locate the new identity's future events. That NIP-65 is signed by the
-fresh `npub[0]` and cannot be forged by an attacker holding the legacy
-`nsec`.
+The rotating client MUST also publish the new chain's NIP-65 for the
+fresh `npub[0]` to the same relays, and MUST perform all remaining
+steps in [Rotating user's client](#rotating-users-client).
 
-In addition to the kind:1042 and NIP-65 publication above, the rotating
-client MUST perform all other steps in
-[Rotating user's client](#rotating-users-client) (kind:0 profile, kind:3
-contacts, signing-key switch, NIP-05 update), substituting the fresh
-chain's `npub[0]` and `nsec[0]` for `npub[i+1]` and `nsec[i+1]`.
+### `verifyBridge(E)`
 
-**`verifyBridge(E)`.** Given a `kind:1041` event `E` whose `bridge` tag
-is `["bridge", "<legacypub>", "<kind:1042_id>"]`, the bridge is valid
-iff all of the following hold:
+Given a `kind:1041` event `E` whose `bridge` tag is
+`["bridge", "<legacypub>", "<kind:1042_id>"]`, the bridge is valid iff
+all of the following hold:
 
-- `isCommitted(legacypub)` is false. This refuses bridges from any key
-  that is already a committed-chain generation; without this gate, an
-  attacker holding `nsec[i]` of a committed chain could sign a
-  `kind:1042` from `npub[i]` and bridge to a key they control. The
-  `isCommitted == false` decision MUST be made against the broad-poll
-  relay set (see [Caution window](#caution-window)); a thin relay view
-  could miss a self-successor that exists elsewhere and let an
-  otherwise refused bridge through.
-- A `kind:1042` event with id `kind:1042_id` exists, is signed by
-  `legacypub`, has a valid signature, and carries a `commits` tag whose
-  value equals `E.pubkey`.
-- No `kind:1042` event signed by `legacypub` with a *different*
-  `commits` target is known to the verifier (fail-closed; see below).
+- **`isCommitted(legacypub)` is false,** decided against the
+  [broad-poll relay set](#broad-poll-relay-set).
+- **The `kind:1042` exists,** is signed by `legacypub`, has a valid
+  signature, and carries a `commits` tag whose value equals
+  `E.pubkey`.
+- **A [NIP-03](https://github.com/nostr-protocol/nips/blob/master/03.md)
+  `kind:1040` attestation for `kind:1042_id` exists,** and its Bitcoin
+  attestation is at least **6 confirmations** deep at the moment of
+  verification.
+- **Bitcoin firstness.** The referenced `kind:1042` has the earliest
+  confirmed Bitcoin block height among all `kind:1042` events signed by
+  `legacypub` that pass the attestation check above, queried against
+  the [broad-poll relay set](#broad-poll-relay-set). Same-block ties
+  break on lexicographically lower event id.
 
-The bridge mechanism is weaker than the
-[committed-identity construction](#committed-identities) and is restricted
-accordingly. The `isCommitted` gate ensures bridges can only ever apply
-to legacy keys; a committed key, identifiable by its own `kind:1041`
-self-successor tag, cannot be bridge-rotated.
+A `verifyBridge` failure caused by a missing or not-yet-deep-enough
+`kind:1040`, or by a transient reorg below 6 confirmations, is
+**pending, not permanent**: verifiers SHOULD re-evaluate when fresh
+`kind:1040` events or new Bitcoin blocks arrive.
 
-For legacy keys the residual weaknesses are:
+### Broad-poll relay set
 
-- The `kind:1042` commitment is **not** self-certifying. It is an ordinary
-  signed event. If the legacy key was *already compromised* before the
-  bridge was published, the attacker can publish their own `kind:1042`.
-- **Fail-closed rule.** If more than one `kind:1042` signed by the legacy
-  key is seen with *different* `commits` targets, the identity is
-  **contested** and clients MUST honour **no** bridge rotation for it. The
-  attacker is denied the takeover; the legitimate user is also frozen (no
-  worse than today).
-- **If a bridge becomes contested**, the legitimate user's only recourse is
-  to abandon the legacy identity, start a fresh committed chain unrelated
-  to the contested key, and re-establish followers socially. This is the
-  same fallback as [Root-secret compromise](#root-secret-compromise).
-- The bridge protects only legacy keys that were clean at the time
-  the bridge was published. Already-compromised legacy keys cannot be
-  recovered by this mechanism.
+Bridge verification MUST query a **broad-poll relay set**: a
+client-configured set that is not narrowed by any relay list under the
+control of the keys being verified, including NIP-65 signed by the
+legacy key. Used for the `isCommitted`, `kind:1042`, and `kind:1040`
+lookups in `verifyBridge`.
 
-### Caution window
+### Residual concerns
 
-Because the bridge depends on the absence of a conflicting `kind:1042`
-and that absence can never be proven in a decentralised network with
-incomplete relay state, clients **SHOULD** apply a caution window before
-treating a bridge migration as settled:
-
-- After first-seeing a `kind:1042` event, clients SHOULD display the
-  bridged identity as "pending migration" for a caution period before
-  propagating the new identity into the follower's own follow list per
-  [Follower's client](#followers-client).
-- During the caution period, if a conflicting `kind:1042` arrives, the
-  bridge is invalidated per the fail-closed rule above. Both the
-  conflict search and the `isCommitted` check inside bridge
-  verification MUST poll the *broad-poll relay set*: a
-  client-configured set that is not narrowed by any relay list under
-  the control of the keys being verified, including NIP-65 signed by
-  the legacy key (which an attacker can forge under compromise).
-- The recommended caution period is **30 days**. The protocol does not
-  mandate a specific duration: a security-sensitive client (e.g. a
-  custody-style application) may choose 90 days, a casual social client may
-  choose 24 hours.
-- Bridge migrations are the *only* case where this caution applies.
-  Committed chain rotations verify locally against the in-key commitment
-  and are settled instantly; no caution window applies to them. Bridge
-  migrations of *committed* keys are not possible at all (refused by
-  `verifyBridge` via `isCommitted`); the caution applies only to bridges
-  of legacy keys.
-
-The new committed chain `npub[0]` may post and rotate normally during the
-caution period; only the follower-side migration of the old identity is
-delayed.
-
-The caution period gives a legitimate user a window to detect compromise
-after a bridge has been published from their key and publish a conflicting
-`kind:1042` to deny the attacker the takeover (mutual destruction within
-the window). Without the caution period, an attacker who publishes a
-bridge from a compromised legacy key could complete the migration before
-the legitimate user discovers the compromise.
+- **Pre-anchor compromise is unrecoverable.** If the legacy `nsec` is
+  in attacker hands before the legitimate `kind:1042` is Bitcoin-
+  anchored, the attacker can publish a competing `kind:1042` and may
+  anchor it earlier; that bridge then wins for every verifier. The
+  fallback is the same as [Root-secret compromise](#root-secret-compromise):
+  abandon the legacy identity and re-establish followers socially.
+- **Pre-confirmation publication window.** Between publishing
+  `kind:1042` and the Bitcoin anchor reaching the 6-confirmation depth
+  (~1 hour), the bridge does not yet bind. A compromise during this
+  window can be raced.
 
 ## Appendix
 
 ### Root-secret compromise
-
-This is the case the NIP **cannot** solve, and it must be stated openly.
 
 If the **root secret** itself leaks, the attacker can derive the entire
 identity chain: every generation, every successor. Rotation within the
 chain is useless because the attacker simply rotates too.
 
 The only response is to **abandon the chain and start a new identity**
-from a fresh root secret, and re-establish the link to followers
-**socially**: out of band, and via whatever web-of-trust signals exist.
+from a fresh root secret, and re-establish the link to followers **socially**.
 
 The root secret should therefore live in a hardware-backed store
 (passkey, secure element, OS keychain) and be exported only as a backup
@@ -817,9 +793,9 @@ practical notes:
 | Asset compromised | Result |
 |---|---|
 | A signing key `nsec[i]`, root secret safe, `kind:1041` self-successor for `npub[i]` already on relays | **Recoverable.** The owner rotates to `i+1`. The thief cannot forge a chain rotation (cannot open the commitment), cannot bridge-rotate (the self-successor makes `npub[i]` ineligible for bridging via `isCommitted`), and cannot derive `nsec[i+1]` (HKDF is one-way). |
-| `nsec[0]` leaked **before** the chain-birth `kind:1041` reaches relays | **Race-dependent.** An attacker can publish a bridge from `npub[0]` to a key they control if they win the race against the legitimate `kind:1041`. The legitimate event, once propagated, retroactively invalidates the bridge via `isCommitted`. The chain-birth client MUST publish the `kind:1041` as the first event from `npub[0]` to keep this window minimal. |
+| `nsec[0]` leaked **before** the chain-birth `kind:1041` reaches relays | **Race-dependent.** An attacker can attempt a bridge from `npub[0]`, but the bridge does not bind until its `kind:1042` has a Bitcoin-anchored attestation (~1 hour). The legitimate chain-birth `kind:1041` propagates in seconds and, once seen, retroactively invalidates the attacker's bridge via `isCommitted`. The chain-birth client MUST publish the `kind:1041` as the first event from `npub[0]` to keep this window minimal. |
 | The **root secret** | **Not recoverable.** Whole chain exposed. See [Root-secret compromise](#root-secret-compromise). |
-| A legacy key, already compromised before bridging | **Not recoverable.** See [The bridge for existing keys](#the-bridge-for-existing-keys). |
+| A legacy key, already compromised before its `kind:1042` is Bitcoin-anchored | **Not recoverable.** See [The bridge for existing keys](#the-bridge-for-existing-keys). |
 
 #### What an attacker can and cannot do
 
@@ -835,16 +811,12 @@ compromise; today's reality).
   Infeasible.
 - Publish a competing commitment; the commitment is in the key, immutable.
 - Bridge-rotate `npub[i]` once its self-successor `kind:1041` has
-  propagated to the broad-poll relay set (see
-  [Caution window](#caution-window)); bridge verification refuses
-  bridges for keys that pass `isCommitted`.
+  propagated to the
+  [broad-poll relay set](#broad-poll-relay-set); bridge verification
+  refuses bridges for keys that pass `isCommitted`.
 - Derive `nsec[i+1]` or any deeper signing key; HKDF is one-way.
 - Rotate `npub[i]` to the *real* `npub[i+1]` themselves; that requires
   `nsec[i+1]`, which only the root-secret holder can derive.
-
-So for a committed identity whose `kind:1041` has propagated, there is
-**no catastrophic-worse-than-today case**: rotation either succeeds
-cleanly or does not happen.
 
 #### Residual concerns
 
@@ -852,11 +824,12 @@ cleanly or does not happen.
   clients reject them with a cheap check. Relay-level spam handling is
   outside the scope of this NIP.
 - **Chain-birth race.** If `nsec[0]` leaks before the chain-birth
-  `kind:1041` propagates, an attacker can win against followers
-  querying lagging relays. Mitigated at the sender by
-  [Chain-birth client](#chain-birth-client) (publish-first MUST) and
-  at the follower by the broad-poll caution in
-  [Caution window](#caution-window).
+  `kind:1041` propagates, an attacker can attempt a bridge from
+  `npub[0]`. Mitigated at the sender by
+  [Chain-birth client](#chain-birth-client) (publish-first MUST), at
+  the follower by the [broad-poll relay set](#broad-poll-relay-set)
+  requirement on bridge verification, and by the ~1-hour Bitcoin
+  anchoring delay before any bridge binds.
 - **`created_at` is self-reported** throughout Nostr; this NIP avoids
   depending on it for anything security-critical (verification uses no
   timestamps).
